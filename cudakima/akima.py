@@ -234,7 +234,7 @@ class AkimaInterpolant1D():
 
     def sort_input(self, x, y):
         """
-        Sort the input data to ensure that all the arrays are in the correct order.
+        Check that the input data have the right shape and sort them to ensure that all the arrays are in the correct order.
 
         Parameters:
             x (ndarray): The x-values of the data points. Shape=(..., n).
@@ -244,7 +244,9 @@ class AkimaInterpolant1D():
             x (ndarray): The sorted x values.
             y (ndarray): The y values, sorted accordingly to `x`.
         """
-
+        if x.shape != y.shape or x.shape[-1] < 4: 
+            raise ValueError('The input arrays must have the same shape and at least 4 points.')
+        
         indices_x = self.xp.argsort(x, axis=-1)
         x = self.xp.take_along_axis(x, indices_x, axis=-1)
         y = self.xp.take_along_axis(y, indices_x, axis=-1)
