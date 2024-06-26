@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 try:
     import cupy as xp
-    from numba import cuda
     cuda_available = True
 
 except (ModuleNotFoundError, ImportError):
@@ -9,6 +8,7 @@ except (ModuleNotFoundError, ImportError):
     cuda_available = False
     
 import numba
+from numba import cuda
 import numpy as np
 
 __all__ = ['AkimaInterpolant1D']
