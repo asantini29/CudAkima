@@ -20,7 +20,7 @@ Check out the examples directory for more info and comparisons.
 
 ### Prerequisites:
 
-CudAkima depends only on `numba` and `numpy`. It also requires' cupy' to be used on GPUs.
+CudAkima depends only on `numba` and `numpy`. It also requires `cupy` to be used on GPUs.
 
 ## Installing:
 1. Clone the repository:
