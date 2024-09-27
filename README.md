@@ -8,7 +8,9 @@ CudAkima is a Python package that offers a parallel, GPU-accelerated implementat
 
 Both `scipy` and `cupy` already offer an implementation of Akima Splines. However, in these versions, the $x$ array the interpolation is performed along can only be 1D. The main point behind the whole package is the fast, parallel interpolation of batches of arrays of different lengths. This is achieved by padding the different 1D arrays with `NaN` and stacking them in multidimensional arrays.
 
-In this implementation, the coefficients of the polynomials used for the interpolation are not saved and kept in memory. For this reason, the package is particularly suited for applications where the arrays to perform the interpolation on keep changing (e.g. when doing parameter estimation on the location and amplitude of the spline knots).
+In this implementation, the coefficients of the polynomials used for the interpolation are not saved and kept in memory. For this reason, the package is particularly suited for applications where the arrays to perform the interpolation on keep changing (e.g. when doing parameter estimation on the location and amplitude of the spline knots). In this specific case, where $x$ and $y$ are matrices of different arrays, CudAkima results faster than a naive loop over the matrices using `scipy` (`cupy`) by a factor of $\sim 3$ ($\sim 20$) on CPUs (GPUs). This comparison can be found in the examples directory.
+
+The interpolation scheme needs at least 4 finite points to succesfully work. This caveat is due to the boundary conditions currently implemented.
 
  Here is a quick example of how to get started with the package:
 ```
