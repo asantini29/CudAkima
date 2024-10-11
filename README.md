@@ -57,3 +57,23 @@ Get in touch if you would like to contribute!
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE) file for details.
+
+## Citing
+
+If you use CudAkima in your research, you can cite it in the following way:
+
+```
+@software{cudakima_2024_13919394,
+  author       = {Alessandro Santini},
+  title        = {asantini29/CudAkima: First public release},
+  month        = oct,
+  year         = 2024,
+  publisher    = {Zenodo},
+  version      = {v0.0.1},
+  doi          = {10.5281/zenodo.13919394},
+  url          = {https://doi.org/10.5281/zenodo.13919394}
+}
+```
+
+## Aknowledgments
+We thank Nikolaos Karnesis for discussions.
