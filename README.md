@@ -65,7 +65,7 @@ If you use CudAkima in your research, you can cite it in the following way:
 ```
 @software{cudakima_2024_13919394,
   author       = {Alessandro Santini},
-  title        = {asantini29/CudAkima: First public release},
+  title        = {asantini29/CudAkima: First official release},
   month        = oct,
   year         = 2024,
   publisher    = {Zenodo},
