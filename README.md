@@ -39,7 +39,7 @@ CudAkima depends only on `numba` and `numpy`. It also requires `cupy` to be used
 
 We use [SemVer](http://semver.org/) for versioning. 
 
-Current Version: 0.0.1
+Current Version: 0.0.2
 
 ## Authors
 
