@@ -66,37 +66,59 @@ def akima_spline_kernel_gpu(x_new, x, y, n_in, ngroups, nnans, result):
     increment2 = cuda.gridDim.y
 
     for j in range(start2, n_in, increment2):
-        
-        for i in range(start1, x_new.shape[0], increment1):
 
-            special_index = j * x_new.shape[0] + i
-            idx = -1
-            stop = (j+1)*ngroups - nnans[j] #! stop iterating when encounters NaNs
+        start = j*ngroups
+        stop = (j+1)*ngroups - nnans[j]
 
-            if x_new[i] == x[stop - 1]: #* deal with extrema
-                result[special_index] = y[stop - 1] 
-            
-            else:
-                for k in range(j*ngroups, (j+1)*(ngroups) - 1):
-                    
-                    if (x_new[i] >= x[k] and x_new[i] < x[k + 1]):
-                        idx = k
-                        break
+        if stop - start < 4:
+            # use linear interpolation if there are less than 4 points 
+            for i in range(start1, x_new.shape[0], increment1):
+                special_index = j * x_new.shape[0] + i
+                idx = -1
+                if x_new[i] == x[stop - 1]:
+                    result[special_index] = y[stop - 1]
+
+                else:
+                    for k in range(start, (j+1)*(ngroups) - 1):
+
+                        if (x_new[i] >= x[k] and x_new[i] < x[k + 1]):
+                            idx = k
+                            break
+
+                    mi = linearslope_gpu(x, y, idx)
+                    result[special_index] = y[idx] + mi * (x_new[i] - x[idx])
+
+        else:
+            # use Akima spline interpolation
+            for i in range(start1, x_new.shape[0], increment1):
+
+                special_index = j * x_new.shape[0] + i
+                idx = -1
                 
-                #* Akima spline interpolation 
-                mi = linearslope_gpu(x, y, idx)
-                si = splineslope_gpu(x, y, idx, j*ngroups, stop)
-                si1 = splineslope_gpu(x, y, idx+1, j*ngroups, stop)
-            
-                p0 = y[idx]
+                if x_new[i] == x[stop - 1]: #* deal with extrema
+                    result[special_index] = y[stop - 1] 
+                
+                else:
+                    for k in range(start, (j+1)*(ngroups) - 1):
+                        
+                        if (x_new[i] >= x[k] and x_new[i] < x[k + 1]):
+                            idx = k
+                            break
+                    
+                    #* Akima spline interpolation 
+                    mi = linearslope_gpu(x, y, idx)
+                    si = splineslope_gpu(x, y, idx, j*ngroups, stop)
+                    si1 = splineslope_gpu(x, y, idx+1, j*ngroups, stop)
+                
+                    p0 = y[idx]
 
-                p1 = si
+                    p1 = si
 
-                p2 = (3*mi - 2*si - si1) / (x[idx+1] - x[idx])
+                    p2 = (3*mi - 2*si - si1) / (x[idx+1] - x[idx])
 
-                p3 = (si + si1 - 2*mi) / (x[idx+1] - x[idx])**2
+                    p3 = (si + si1 - 2*mi) / (x[idx+1] - x[idx])**2
 
-                result[special_index] = p0 + p1 * (x_new[i] - x[idx]) + p2 * (x_new[i] - x[idx])**2 + p3 * (x_new[i] - x[idx])**3
+                    result[special_index] = p0 + p1 * (x_new[i] - x[idx]) + p2 * (x_new[i] - x[idx])**2 + p3 * (x_new[i] - x[idx])**3
 
 
 
@@ -146,34 +168,57 @@ def splineslope_cpu(x, y, idx, start, stop):
 @numba.jit(nopython=True)
 def akima_spline_kernel_cpu(x_new, x, y, n_in, ngroups, nnans, result):
     for j in range(n_in):
-        for i in range(x_new.shape[0]):
-            special_index = j * x_new.shape[0] + i
-            idx = -1
-            stop = (j+1)*ngroups - nnans[j]
-            if x_new[i] == x[stop - 1]: #* deal with extrema
-                result[special_index] = y[stop - 1] 
-            
-            else:
-                for k in range(j*ngroups, (j+1)*(ngroups) - 1):
-                    
-                    if (x_new[i] >= x[k] and x_new[i] < x[k + 1]):
-                        idx = k
-                        break
+
+        # find the first and last non-NaN values
+        start = j*ngroups
+        stop = (j+1)*ngroups - nnans[j]
+
+        if stop - start < 4:
+            # use linear interpolation if there are less than 4 points
+            for i in range(x_new.shape[0]):
+                special_index = j * x_new.shape[0] + i
+                idx = -1
+                if x_new[i] == x[stop - 1]:
+                    result[special_index] = y[stop - 1]
+
+                else:
+                    for k in range(start, (j+1)*(ngroups) - 1):
+
+                        if (x_new[i] >= x[k] and x_new[i] < x[k + 1]):
+                            idx = k
+                            break
+
+                    mi = linearslope_cpu(x, y, idx)
+                    result[special_index] = y[idx] + mi * (x_new[i] - x[idx])            
+        else:
+            # use Akima spline interpolation
+            for i in range(x_new.shape[0]):
+                special_index = j * x_new.shape[0] + i
+                idx = -1
+                if x_new[i] == x[stop - 1]: #* deal with extrema
+                    result[special_index] = y[stop - 1] 
                 
-                #* Akima spline interpolation 
-                mi = linearslope_cpu(x, y, idx)
-                si = splineslope_cpu(x, y, idx, j*ngroups, stop)
-                si1 = splineslope_cpu(x, y, idx+1, j*ngroups, stop)
-            
-                p0 = y[idx]
+                else:
+                    for k in range(start, (j+1)*(ngroups) - 1):
+                        
+                        if (x_new[i] >= x[k] and x_new[i] < x[k + 1]):
+                            idx = k
+                            break
+                    
+                    #* Akima spline interpolation 
+                    mi = linearslope_cpu(x, y, idx)
+                    si = splineslope_cpu(x, y, idx, start, stop)
+                    si1 = splineslope_cpu(x, y, idx+1, start, stop)
+                
+                    p0 = y[idx]
 
-                p1 = si
+                    p1 = si
 
-                p2 = (3*mi - 2*si - si1) / (x[idx+1] - x[idx])
+                    p2 = (3*mi - 2*si - si1) / (x[idx+1] - x[idx])
 
-                p3 = (si + si1 - 2*mi) / (x[idx+1] - x[idx])**2
+                    p3 = (si + si1 - 2*mi) / (x[idx+1] - x[idx])**2
 
-                result[special_index] = p0 + p1 * (x_new[i] - x[idx]) + p2 * (x_new[i] - x[idx])**2 + p3 * (x_new[i] - x[idx])**3
+                    result[special_index] = p0 + p1 * (x_new[i] - x[idx]) + p2 * (x_new[i] - x[idx])**2 + p3 * (x_new[i] - x[idx])**3
 
 
 class AkimaInterpolant1D():
@@ -204,8 +249,6 @@ class AkimaInterpolant1D():
     def __init__(self, use_gpu=True, threadsperblock=64, sanitize=False, verbose=False):
         self.verbose = verbose
         self.threadsperblock = threadsperblock
-        self.sanitize = sanitize
-        self.set_sanitize()
      
         if use_gpu and cuda_available:
             self.interpolate = self.interpolate_gpu
@@ -215,6 +258,9 @@ class AkimaInterpolant1D():
                 print('no CUDA or CuPy available, using CPU version')
             self.interpolate = self.interpolate_cpu
             self.xp = np 
+
+        self.sanitize = sanitize
+        self.set_sanitize()
             
     @property
     def threadsperblock(self):
@@ -244,8 +290,10 @@ class AkimaInterpolant1D():
             x (ndarray): The sorted x values.
             y (ndarray): The y values, sorted accordingly to `x`.
         """
-        if x.shape != y.shape or x.shape[-1] < 4: 
-            raise ValueError('The input arrays must have the same shape and at least 4 points.')
+        x = self.xp.asarray(x)
+        y = self.xp.asarray(y)
+        # if x.shape != y.shape or x.shape[-1] < 4: 
+        #     raise ValueError('The input arrays must have the same shape and at least 4 points.')
         
         indices_x = self.xp.argsort(x, axis=-1)
         x = self.xp.take_along_axis(x, indices_x, axis=-1)
