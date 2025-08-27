@@ -220,6 +220,273 @@ def akima_spline_kernel_cpu(x_new, x, y, n_in, ngroups, nnans, result):
 
                     result[special_index] = p0 + p1 * (x_new[i] - x[idx]) + p2 * (x_new[i] - x[idx])**2 + p3 * (x_new[i] - x[idx])**3
 
+@cuda.jit(device=True)
+def binary_search_gpu(x, target, start, stop):
+    """Binary search for interval location - much faster than linear search"""
+    left = start
+    right = stop - 1
+    
+    while left <= right:
+        mid = (left + right) // 2
+        if mid >= stop - 1:  # Handle boundary
+            return stop - 2
+        if x[mid] <= target < x[mid + 1]:
+            return mid
+        elif target < x[mid]:
+            right = mid - 1
+        else:
+            left = mid + 1
+    
+    return stop - 2  # Fallback
+
+@cuda.jit
+def precompute_slopes_kernel(x, y, slopes, nin, ngroups, nnans):
+    """Precompute all linear slopes in parallel"""
+    idx = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+    group_idx = cuda.blockIdx.y
+    
+    if group_idx >= nin:
+        return
+    
+    start = group_idx * ngroups
+    stop = (group_idx + 1) * ngroups - nnans[group_idx]
+    
+    if idx < (stop - start - 1):  # Need pairs of points
+        actual_idx = start + idx
+        if actual_idx < stop - 1:
+            dx = x[actual_idx + 1] - x[actual_idx]
+            dy = y[actual_idx + 1] - y[actual_idx]
+            slopes[actual_idx] = dy / dx
+
+@cuda.jit
+def precompute_spline_slopes_kernel(x, y, linear_slopes, spline_slopes, nin, ngroups, nnans):
+    """Precompute spline slopes in parallel"""
+    idx = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+    group_idx = cuda.blockIdx.y
+    
+    if group_idx >= nin:
+        return
+    
+    start = group_idx * ngroups
+    stop = (group_idx + 1) * ngroups - nnans[group_idx]
+    
+    if idx < (stop - start) and (stop - start) >= 4:
+        actual_idx = start + idx
+        spline_slopes[actual_idx] = splineslope_gpu_optimized(
+            x, y, linear_slopes, actual_idx, start, stop
+        )
+
+@cuda.jit(device=True)
+def splineslope_gpu_optimized(x, y, linear_slopes, idx, start, stop):
+    """Optimized spline slope computation using precomputed linear slopes"""
+    # Boundary conditions
+    if idx == start:
+        return (3 * linear_slopes[idx] - linear_slopes[idx + 1]) / 2
+    elif idx == start + 1:
+        w1 = abs(linear_slopes[idx + 1] - linear_slopes[idx])
+        w2 = abs(linear_slopes[idx] - linear_slopes[idx - 1])
+        if w1 + w2 == 0:
+            return (linear_slopes[idx - 1] + linear_slopes[idx]) / 2
+        return (w1 * linear_slopes[idx - 1] + w2 * linear_slopes[idx]) / (w1 + w2)
+    elif idx == stop - 2:
+        w1 = abs(linear_slopes[idx - 2] - linear_slopes[idx - 1])
+        w2 = abs(linear_slopes[idx - 1] - linear_slopes[idx])
+        if w1 + w2 == 0:
+            return (linear_slopes[idx - 1] + linear_slopes[idx]) / 2
+        return (w1 * linear_slopes[idx] + w2 * linear_slopes[idx - 1]) / (w1 + w2)
+    elif idx == stop - 1:
+        return (3 * linear_slopes[idx - 1] - linear_slopes[idx - 2]) / 2
+    
+    # General case
+    mi_2 = linear_slopes[idx - 2]
+    mi_1 = linear_slopes[idx - 1] 
+    mi = linear_slopes[idx]
+    mi1 = linear_slopes[idx + 1]
+    
+    w1 = abs(mi1 - mi)
+    w2 = abs(mi_1 - mi_2)
+    
+    thr = max(w1, abs(mi - mi_1), w2, 1e-99) * 1e-9
+    
+    if (w1 + w2) < thr:
+        return (mi_1 + mi) / 2
+    else:
+        return (w1 * mi_1 + w2 * mi) / (w1 + w2)
+
+@cuda.jit
+def akima_spline_kernel_optimized(x_new, x, y, linear_slopes, spline_slopes, 
+                                 nin, ngroups, nnans, result):
+    """Optimized main interpolation kernel"""
+    i = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x  # x_new index
+    j = cuda.blockIdx.y  # group index
+    
+    if i >= x_new.shape[0] or j >= nin:
+        return
+    
+    start = j * ngroups
+    stop = (j + 1) * ngroups - nnans[j]
+    special_index = j * x_new.shape[0] + i
+    
+    # Handle edge case
+    if x_new[i] >= x[stop - 1]:
+        result[special_index] = y[stop - 1]
+        return
+    
+    # Use binary search for interval finding
+    idx = binary_search_gpu(x, x_new[i], start, stop)
+    
+    if stop - start < 4:
+        # Linear interpolation
+        mi = linear_slopes[idx]
+        result[special_index] = y[idx] + mi * (x_new[i] - x[idx])
+    else:
+        # Akima spline interpolation
+        mi = linear_slopes[idx]
+        si = spline_slopes[idx]
+        si1 = spline_slopes[idx + 1]
+        
+        dx = x[idx + 1] - x[idx]
+        dt = x_new[i] - x[idx]
+        
+        p0 = y[idx]
+        p1 = si
+        p2 = (3 * mi - 2 * si - si1) / dx
+        p3 = (si + si1 - 2 * mi) / (dx * dx)
+        
+        result[special_index] = p0 + p1 * dt + p2 * dt * dt + p3 * dt * dt * dt
+
+@numba.jit(nopython=True)
+def binary_search_cpu(x, target, start, stop):
+    """Binary search for interval location - CPU version"""
+    left = start
+    right = stop - 1
+    
+    while left <= right:
+        mid = (left + right) // 2
+        if mid >= stop - 1:
+            return stop - 2
+        if x[mid] <= target < x[mid + 1]:
+            return mid
+        elif target < x[mid]:
+            right = mid - 1
+        else:
+            left = mid + 1
+    
+    return stop - 2
+
+@numba.jit(nopython=True)
+def precompute_all_linear_slopes_cpu(x, y, nin, ngroups, nnans):
+    """Precompute all linear slopes for all groups"""
+    total_points = nin * ngroups
+    linear_slopes = np.zeros(total_points)
+    
+    for j in range(nin):
+        start = j * ngroups
+        stop = (j + 1) * ngroups - nnans[j]
+        
+        for i in range(start, stop - 1):
+            dx = x[i + 1] - x[i]
+            dy = y[i + 1] - y[i]
+            linear_slopes[i] = dy / dx
+    
+    return linear_slopes
+
+@numba.jit(nopython=True)
+def precompute_all_spline_slopes_cpu(x, y, linear_slopes, nin, ngroups, nnans):
+    """Precompute all spline slopes for all groups"""
+    total_points = nin * ngroups
+    spline_slopes = np.zeros(total_points)
+    
+    for j in range(nin):
+        start = j * ngroups
+        stop = (j + 1) * ngroups - nnans[j]
+        
+        if stop - start >= 4:  # Only compute for Akima interpolation
+            for i in range(start, stop):
+                spline_slopes[i] = splineslope_cpu_optimized(
+                    x, y, linear_slopes, i, start, stop
+                )
+    
+    return spline_slopes
+
+@numba.jit(nopython=True)
+def splineslope_cpu_optimized(x, y, linear_slopes, idx, start, stop):
+    """Optimized spline slope computation using precomputed linear slopes"""
+    # Boundary conditions
+    if idx == start:
+        return (3 * linear_slopes[idx] - linear_slopes[idx + 1]) / 2
+    elif idx == start + 1:
+        w1 = abs(linear_slopes[idx + 1] - linear_slopes[idx])
+        w2 = abs(linear_slopes[idx] - linear_slopes[idx - 1])
+        if w1 + w2 == 0:
+            return (linear_slopes[idx - 1] + linear_slopes[idx]) / 2
+        return (w1 * linear_slopes[idx - 1] + w2 * linear_slopes[idx]) / (w1 + w2)
+    elif idx == stop - 2:
+        w1 = abs(linear_slopes[idx - 2] - linear_slopes[idx - 1])
+        w2 = abs(linear_slopes[idx - 1] - linear_slopes[idx])
+        if w1 + w2 == 0:
+            return (linear_slopes[idx - 1] + linear_slopes[idx]) / 2
+        return (w1 * linear_slopes[idx] + w2 * linear_slopes[idx - 1]) / (w1 + w2)
+    elif idx == stop - 1:
+        return (3 * linear_slopes[idx - 1] - linear_slopes[idx - 2]) / 2
+    
+    # General case
+    mi_2 = linear_slopes[idx - 2]
+    mi_1 = linear_slopes[idx - 1] 
+    mi = linear_slopes[idx]
+    mi1 = linear_slopes[idx + 1]
+    
+    w1 = abs(mi1 - mi)
+    w2 = abs(mi_1 - mi_2)
+    
+    thr = max(w1, abs(mi - mi_1), w2, 1e-99) * 1e-9
+    
+    if (w1 + w2) < thr:
+        return (mi_1 + mi) / 2
+    else:
+        return (w1 * mi_1 + w2 * mi) / (w1 + w2)
+
+@numba.jit(nopython=True, parallel=True)
+def akima_spline_kernel_cpu_optimized(x_new, x, y, linear_slopes, spline_slopes, 
+                                     nin, ngroups, nnans, result):
+    """Optimized CPU kernel with precomputed slopes and parallel execution"""
+    
+    # Parallel loop over groups
+    for j in numba.prange(nin):
+        start = j * ngroups
+        stop = (j + 1) * ngroups - nnans[j]
+        
+        # Sequential loop over interpolation points (inner loop)
+        for i in range(x_new.shape[0]):
+            special_index = j * x_new.shape[0] + i
+            
+            # Handle edge case
+            if x_new[i] >= x[stop - 1]:
+                result[special_index] = y[stop - 1]
+                continue
+            
+            # Use binary search for interval finding
+            idx = binary_search_cpu(x, x_new[i], start, stop)
+            
+            if stop - start < 4:
+                # Linear interpolation
+                mi = linear_slopes[idx]
+                result[special_index] = y[idx] + mi * (x_new[i] - x[idx])
+            else:
+                # Akima spline interpolation
+                mi = linear_slopes[idx]
+                si = spline_slopes[idx]
+                si1 = spline_slopes[idx + 1]
+                
+                dx = x[idx + 1] - x[idx]
+                dt = x_new[i] - x[idx]
+                
+                p0 = y[idx]
+                p1 = si
+                p2 = (3 * mi - 2 * si - si1) / dx
+                p3 = (si + si1 - 2 * mi) / (dx * dx)
+                
+                result[special_index] = p0 + p1 * dt + p2 * dt * dt + p3 * dt * dt * dt
 
 class AkimaInterpolant1D():
     """
@@ -366,45 +633,48 @@ class AkimaInterpolant1D():
     
     def interpolate_gpu(self, x_new, x, y, nin, ngroups, nnans, result):
         """
-        Interpolates the given data using Akima spline interpolation on the GPU.
-
-        Parameters:
-        - x_new (ndarray): The new x-values to interpolate at.
-        - x (ndarray): The flattened original x-values.
-        - y (ndarray): The flattened original y-values.
-        - nin (int): The number of input points.
-        - ngroups (int): The number of groups.
-        - nnans (int): The number of NaN values. They are used to decide when to stop interpolating.
-        - result (ndarray): The array to store the interpolated values.
-
-        Returns:
-        - result (ndarray): The array containing the interpolated values.
+        Optimized GPU interpolation with precomputed slopes and binary search
         """
-
-        blockspergrid = (x_new.shape[0] + (self.threadsperblock - 1)) // self.threadsperblock
-        grid = (blockspergrid, nin, 1)
-
-        akima_spline_kernel_gpu[grid, self.threadsperblock](x_new, x, y, nin, ngroups, nnans, result)
-
-        #return result
+        # Allocate temporary arrays for precomputed slopes
+        total_points = nin * ngroups
+        linear_slopes = self.xp.zeros(total_points)
+        spline_slopes = self.xp.zeros(total_points)
+        
+        # Grid configuration for preprocessing
+        max_points_per_group = ngroups
+        precompute_threads = min(self.threadsperblock, max_points_per_group)
+        precompute_blocks_x = (max_points_per_group + precompute_threads - 1) // precompute_threads
+        precompute_grid = (precompute_blocks_x, nin, 1)
+        
+        # Step 1: Precompute linear slopes
+        precompute_slopes_kernel[precompute_grid, precompute_threads](
+            x, y, linear_slopes, nin, ngroups, nnans
+        )
+        
+        # Step 2: Precompute spline slopes (depends on linear slopes)
+        precompute_spline_slopes_kernel[precompute_grid, precompute_threads](
+            x, y, linear_slopes, spline_slopes, nin, ngroups, nnans
+        )
+        
+        # Step 3: Main interpolation with optimized memory access
+        interp_threads = min(self.threadsperblock, x_new.shape[0])
+        interp_blocks_x = (x_new.shape[0] + interp_threads - 1) // interp_threads
+        interp_grid = (interp_blocks_x, nin, 1)
+        
+        akima_spline_kernel_optimized[interp_grid, interp_threads](
+            x_new, x, y, linear_slopes, spline_slopes, nin, ngroups, nnans, result
+        )
     
     def interpolate_cpu(self, x_new, x, y, nin, ngroups, nnans, result):
         """
-        Interpolates the given data using Akima spline interpolation on the CPU.
-
-        Parameters:
-        - x_new (ndarray): The new x-values to interpolate at.
-        - x (ndarray): The flattened original x-values.
-        - y (ndarray): The flattened original y-values.
-        - nin (int): The number of input points.
-        - ngroups (int): The number of groups.
-        - nnans (int): The number of NaN values. They are used to decide when to stop interpolating.
-        - result (ndarray): The array to store the interpolated values.
-
-        Returns:
-        - result (ndarray): The array containing the interpolated values.
+        Optimized CPU interpolation with precomputed slopes and parallel execution
         """
-
-        akima_spline_kernel_cpu(x_new, x, y, nin, ngroups, nnans, result)
-
-        #return result
+        # Step 1: Precompute all linear slopes
+        linear_slopes = precompute_all_linear_slopes_cpu(x, y, nin, ngroups, nnans)
+        
+        # Step 2: Precompute all spline slopes
+        spline_slopes = precompute_all_spline_slopes_cpu(x, y, linear_slopes, nin, ngroups, nnans)
+        
+        # Step 3: Main interpolation with parallelization
+        akima_spline_kernel_cpu_optimized(x_new, x, y, linear_slopes, spline_slopes, 
+                                         nin, ngroups, nnans, result)
