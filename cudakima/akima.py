@@ -678,3 +678,298 @@ class AkimaInterpolant1D():
         # Step 3: Main interpolation with parallelization
         akima_spline_kernel_cpu_optimized(x_new, x, y, linear_slopes, spline_slopes, 
                                          nin, ngroups, nnans, result)
+        
+
+@cuda.jit
+def akima_spline_kernel_gpu_multidim(x_new, x, y, linear_slopes, spline_slopes, 
+                                     nin, ngroups, nnans, result):
+    """GPU kernel for multidimensional x_new arrays"""
+    i = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x  # x_new index within group
+    j = cuda.blockIdx.y  # group index
+    
+    if j >= nin:
+        return
+    
+    start = j * ngroups
+    stop = (j + 1) * ngroups - nnans[j]
+    
+    # x_new is now multidimensional: x_new[j, i] instead of x_new[i]
+    x_new_group_size = x_new.shape[1]  # assuming x_new.shape = (nin, n_f)
+    
+    if i >= x_new_group_size:
+        return
+    
+    special_index = j * x_new_group_size + i
+    x_target = x_new[j, i]
+    
+    # Handle edge case
+    if x_target >= x[stop - 1]:
+        result[special_index] = y[stop - 1]
+        return
+    
+    # Use binary search for interval finding
+    idx = binary_search_gpu(x, x_target, start, stop)
+    
+    if stop - start < 4:
+        # Linear interpolation
+        mi = linear_slopes[idx]
+        result[special_index] = y[idx] + mi * (x_target - x[idx])
+    else:
+        # Akima spline interpolation
+        mi = linear_slopes[idx]
+        si = spline_slopes[idx]
+        si1 = spline_slopes[idx + 1]
+        
+        dx = x[idx + 1] - x[idx]
+        dt = x_target - x[idx]
+        
+        p0 = y[idx]
+        p1 = si
+        p2 = (3 * mi - 2 * si - si1) / dx
+        p3 = (si + si1 - 2 * mi) / (dx * dx)
+        
+        result[special_index] = p0 + p1 * dt + p2 * dt * dt + p3 * dt * dt * dt
+
+@numba.jit(nopython=True, parallel=True)
+def akima_spline_kernel_cpu_multidim(x_new, x, y, linear_slopes, spline_slopes, 
+                                     nin, ngroups, nnans, result):
+    """CPU kernel for multidimensional x_new arrays"""
+    
+    # Parallel loop over groups
+    for j in numba.prange(nin):
+        start = j * ngroups
+        stop = (j + 1) * ngroups - nnans[j]
+        
+        x_new_group_size = x_new.shape[1]  # x_new.shape = (nin, n_f)
+        
+        # Sequential loop over interpolation points for this group
+        for i in range(x_new_group_size):
+            special_index = j * x_new_group_size + i
+            x_target = x_new[j, i]
+            
+            # Handle edge case
+            if x_target >= x[stop - 1]:
+                result[special_index] = y[stop - 1]
+                continue
+            
+            # Use binary search for interval finding
+            idx = binary_search_cpu(x, x_target, start, stop)
+            
+            if stop - start < 4:
+                # Linear interpolation
+                mi = linear_slopes[idx]
+                result[special_index] = y[idx] + mi * (x_target - x[idx])
+            else:
+                # Akima spline interpolation
+                mi = linear_slopes[idx]
+                si = spline_slopes[idx]
+                si1 = spline_slopes[idx + 1]
+                
+                dx = x[idx + 1] - x[idx]
+                dt = x_target - x[idx]
+                
+                p0 = y[idx]
+                p1 = si
+                p2 = (3 * mi - 2 * si - si1) / dx
+                p3 = (si + si1 - 2 * mi) / (dx * dx)
+                
+                result[special_index] = p0 + p1 * dt + p2 * dt * dt + p3 * dt * dt * dt
+
+class AkimaInterpolant1DMultiDim(AkimaInterpolant1D):
+    """
+    GPU-accelerated parallel Akima Splines with multidimensional x_new support.
+    
+    This class extends the base AkimaInterpolant1D to handle multidimensional x_new arrays,
+    where each group in the batch can have different interpolation points.
+    
+    Key difference from base class:
+    - x_new can have shape (..., n_f) matching the batch dimensions of x and y
+    - Each group gets its own set of interpolation points
+    - Output shape remains (..., n_f) as before
+    
+    Example:
+    If you have batch data with shape (M, L, K, n) and want different interpolation
+    points for each group:
+    ```
+    x = np.random.rand(2, 3, 10)  # 2x3 batch, 10 points each
+    y = np.sin(x)  # same shape
+    x_new = np.random.rand(2, 3, 50)  # 2x3 batch, 50 interp points each
+    
+    interpolant = AkimaInterpolant1DMultiDim()
+    y_new = interpolant(x_new, x, y)  # shape: (2, 3, 50)
+    ```
+    
+    Parameters are the same as AkimaInterpolant1D.
+    """
+    
+    def __call__(self, x_new, x, y, **kwargs):
+        """
+        Interpolates with multidimensional x_new arrays.
+
+        Parameters:
+            x_new (ndarray): The new x-values to interpolate. Shape=(..., n_f) where ... 
+                           matches the batch dimensions of x and y.
+            x (ndarray): The x-values of the data points. Shape=(..., n).
+            y (ndarray): The y-values of the data points. Shape=(..., n).
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            ndarray: The interpolated values. Shape=(..., n_f).
+        """
+        # Validate input shapes
+        if x.shape[:-1] != y.shape[:-1]:
+            raise ValueError("x and y must have the same batch dimensions")
+        
+        if x_new.shape[:-1] != x.shape[:-1]:
+            raise ValueError("x_new batch dimensions must match x and y batch dimensions")
+        
+        x, y = self.sanitize_input(x, y)
+        
+        # If sanitize is enabled, we also need to sort x_new accordingly
+        if self.sanitize:
+            x_new = self._sort_x_new_with_xy(x_new, x, y)
+        
+        ngroups = x.shape[-1]
+        n_interp = x_new.shape[-1]
+        batch_shape = x.shape[:-1]
+        
+        # Reshape for processing
+        x = x.reshape(-1, ngroups, order='C')
+        y = y.reshape(-1, ngroups, order='C')
+        x_new = x_new.reshape(-1, n_interp, order='C')
+        
+        nin = x.shape[0]
+        result = self.xp.zeros(nin * n_interp)
+        
+        x_flat = x.flatten()
+        y_flat = y.flatten()
+        nnans = self.xp.count_nonzero(self.xp.isnan(x), axis=1)
+        
+        self.interpolate_multidim(x_new, x_flat, y_flat, nin, ngroups, nnans, result)
+        
+        # Reshape result to match expected output shape
+        result = result.reshape(batch_shape + (n_interp,), order='C')
+        
+        return result
+    
+    def _sort_x_new_with_xy(self, x_new, x_sorted, y_sorted):
+        """
+        Sort x_new arrays to match the sorting applied to x and y.
+        This ensures consistency when sanitize=True.
+        """
+        # For multidimensional x_new, we sort each group independently
+        x_new = self.xp.asarray(x_new)
+        
+        # Sort x_new along the last axis for each group
+        indices_x_new = self.xp.argsort(x_new, axis=-1)
+        x_new_sorted = self.xp.take_along_axis(x_new, indices_x_new, axis=-1)
+        
+        return x_new_sorted
+    
+    def interpolate_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
+        """Dispatch to appropriate multidimensional interpolation method"""
+        if hasattr(self, 'interpolate_gpu') and self.xp != np:
+            self.interpolate_gpu_multidim(x_new, x, y, nin, ngroups, nnans, result)
+        else:
+            self.interpolate_cpu_multidim(x_new, x, y, nin, ngroups, nnans, result)
+    
+    def interpolate_gpu_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
+        """
+        GPU interpolation for multidimensional x_new arrays
+        """
+        # Allocate temporary arrays for precomputed slopes
+        total_points = nin * ngroups
+        linear_slopes = self.xp.zeros(total_points)
+        spline_slopes = self.xp.zeros(total_points)
+        
+        # Grid configuration for preprocessing (same as before)
+        max_points_per_group = ngroups
+        precompute_threads = min(self.threadsperblock, max_points_per_group)
+        precompute_blocks_x = (max_points_per_group + precompute_threads - 1) // precompute_threads
+        precompute_grid = (precompute_blocks_x, nin, 1)
+        
+        # Step 1: Precompute linear slopes
+        precompute_slopes_kernel[precompute_grid, precompute_threads](
+            x, y, linear_slopes, nin, ngroups, nnans
+        )
+        
+        # Step 2: Precompute spline slopes
+        precompute_spline_slopes_kernel[precompute_grid, precompute_threads](
+            x, y, linear_slopes, spline_slopes, nin, ngroups, nnans
+        )
+        
+        # Step 3: Main interpolation with multidimensional x_new
+        n_interp = x_new.shape[1]
+        interp_threads = min(self.threadsperblock, n_interp)
+        interp_blocks_x = (n_interp + interp_threads - 1) // interp_threads
+        interp_grid = (interp_blocks_x, nin, 1)
+        
+        akima_spline_kernel_gpu_multidim[interp_grid, interp_threads](
+            x_new, x, y, linear_slopes, spline_slopes, nin, ngroups, nnans, result
+        )
+    
+    def interpolate_cpu_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
+        """
+        CPU interpolation for multidimensional x_new arrays
+        """
+        # Step 1: Precompute all linear slopes
+        linear_slopes = precompute_all_linear_slopes_cpu(x, y, nin, ngroups, nnans)
+        
+        # Step 2: Precompute all spline slopes
+        spline_slopes = precompute_all_spline_slopes_cpu(x, y, linear_slopes, nin, ngroups, nnans)
+        
+        # Step 3: Main interpolation with multidimensional x_new
+        akima_spline_kernel_cpu_multidim(x_new, x, y, linear_slopes, spline_slopes, 
+                                        nin, ngroups, nnans, result)
+
+class AkimaInterpolant1DFlexible(AkimaInterpolant1D):
+    """
+    Flexible Akima interpolator that automatically detects x_new dimensionality.
+    
+    This class automatically chooses between standard (1D x_new) and multidimensional
+    x_new interpolation based on the input array shapes.
+    
+    Usage:
+    ```
+    interpolant = AkimaInterpolant1DFlexible()
+    
+    # Standard usage (1D x_new for all groups)
+    y_new = interpolant(x_new_1d, x, y)
+    
+    # Multidimensional usage (different x_new for each group)  
+    y_new = interpolant(x_new_multidim, x, y)
+    ```
+    """
+
+    @property
+    def multidim_interpolator(self):
+        """
+        Create and return the multidimensional Akima interpolator.
+        """
+        return AkimaInterpolant1DMultiDim(
+            use_gpu=(self.xp != np), 
+            threadsperblock=self.threadsperblock,
+            sanitize=self.sanitize,
+            verbose=self.verbose
+        )
+
+    def __call__(self, x_new, x, y, **kwargs):
+        """
+        Automatically dispatch to appropriate interpolation method based on x_new shape.
+        """
+        x_new = self.xp.asarray(x_new)
+        x = self.xp.asarray(x)
+        y = self.xp.asarray(y)
+        
+        # Check if x_new is multidimensional (matches batch dims of x,y)
+        if len(x_new.shape) > 1 and x_new.shape[:-1] == x.shape[:-1]:
+            # Use multidimensional interpolation
+            return self._call_multidim(x_new, x, y, **kwargs)
+        else:
+            # Use standard interpolation (broadcast x_new across all groups)
+            return super().__call__(x_new, x, y, **kwargs)
+    
+    def _call_multidim(self, x_new, x, y, **kwargs):
+        """Internal method for multidimensional interpolation"""    
+        
+        return self.multidim_interpolator(x_new, x, y, **kwargs)
