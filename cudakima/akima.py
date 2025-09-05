@@ -11,7 +11,7 @@ import numba
 from numba import cuda
 import numpy as np
 
-__all__ = ['AkimaInterpolant1D']
+__all__ = ['AkimaInterpolant1D', 'AkimaInterpolant1DMultiDim', 'AkimaInterpolant1DFlexible']
 
 ## GPU version
 
