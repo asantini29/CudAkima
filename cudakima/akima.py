@@ -355,6 +355,30 @@ def akima_spline_kernel_optimized(x_new, x, y, linear_slopes, spline_slopes,
         
         result[special_index] = p0 + p1 * dt + p2 * dt * dt + p3 * dt * dt * dt
 
+@cuda.jit
+def akima_linear_kernel(x_new, x, y, linear_slopes,nin, ngroups, nnans, result):
+    i = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x  # x_new index
+    j = cuda.blockIdx.y  # group index
+    
+    if i >= x_new.shape[0] or j >= nin:
+        return
+    
+    start = j * ngroups
+    stop = (j + 1) * ngroups - nnans[j]
+    special_index = j * x_new.shape[0] + i
+    
+    # Handle edge case
+    if x_new[i] >= x[stop - 1]:
+        result[special_index] = y[stop - 1]
+        return
+    
+    # Use binary search for interval finding
+    idx = binary_search_gpu(x, x_new[i], start, stop)
+    
+    # Linear interpolation
+    mi = linear_slopes[idx]
+    result[special_index] = y[idx] + mi * (x_new[i] - x[idx])
+
 @numba.jit(nopython=True)
 def binary_search_cpu(x, target, start, stop):
     """Binary search for interval location - CPU version"""
@@ -488,6 +512,28 @@ def akima_spline_kernel_cpu_optimized(x_new, x, y, linear_slopes, spline_slopes,
                 
                 result[special_index] = p0 + p1 * dt + p2 * dt * dt + p3 * dt * dt * dt
 
+
+@numba.jit(nopython=True, parallel=True)
+def akima_linear_kernel_cpu(x_new, x, y, linear_slopes,nin, ngroups, nnans, result):
+    for j in range(nin):
+        start = j * ngroups
+        stop = (j + 1) * ngroups - nnans[j]
+        
+        for i in range(x_new.shape[0]):
+            special_index = j * x_new.shape[0] + i
+            
+            # Handle edge case
+            if x_new[i] >= x[stop - 1]:
+                result[special_index] = y[stop - 1]
+                continue
+            
+            # Use binary search for interval finding
+            idx = binary_search_cpu(x, x_new[i], start, stop)
+            
+            # Linear interpolation
+            mi = linear_slopes[idx]
+            result[special_index] = y[idx] + mi * (x_new[i] - x[idx])
+
 class AkimaInterpolant1D():
     """
     GPU-accelerated parallel Akima Splines.
@@ -513,17 +559,20 @@ class AkimaInterpolant1D():
         verbose (bool): If True, print information about the interpolation process. Default is False.
 
     """
-    def __init__(self, use_gpu=True, threadsperblock=64, sanitize=False, verbose=False):
+    def __init__(self, use_gpu=True, threadsperblock=64, order='cubic', sanitize=False, verbose=False):
         self.verbose = verbose
         self.threadsperblock = threadsperblock
-     
+
+        assert order in ['linear', 'cubic'], "Order must be either 'linear' or 'cubic'."
+        self.order = order
+
         if use_gpu and cuda_available:
-            self.interpolate = self.interpolate_gpu
+            self.interpolate = self.cubic_interpolate_gpu if order == 'cubic' else self.linear_interpolate_gpu
             self.xp = xp 
         else:
             if self.verbose:
                 print('no CUDA or CuPy available, using CPU version')
-            self.interpolate = self.interpolate_cpu
+            self.interpolate = self.cubic_interpolate_cpu if order == 'cubic' else self.linear_interpolate_cpu
             self.xp = np 
 
         self.sanitize = sanitize
@@ -631,7 +680,47 @@ class AkimaInterpolant1D():
     
         return result
     
-    def interpolate_gpu(self, x_new, x, y, nin, ngroups, nnans, result):
+    def linear_interpolate_gpu(self, x_new, x, y, nin, ngroups, nnans, result):
+        """
+        Optimized GPU interpolation with precomputed slopes and binary search
+        """
+        # Allocate temporary arrays for precomputed slopes
+        total_points = nin * ngroups
+        linear_slopes = self.xp.zeros(total_points)
+        
+        # Grid configuration for preprocessing
+        max_points_per_group = ngroups
+        precompute_threads = min(self.threadsperblock, max_points_per_group)
+        precompute_blocks_x = (max_points_per_group + precompute_threads - 1) // precompute_threads
+        precompute_grid = (precompute_blocks_x, nin, 1)
+        
+        # Step 1: Precompute linear slopes
+        precompute_slopes_kernel[precompute_grid, precompute_threads](
+            x, y, linear_slopes, nin, ngroups, nnans
+        )
+        
+        
+        # Step 2: Main interpolation with optimized memory access
+        interp_threads = min(self.threadsperblock, x_new.shape[0])
+        interp_blocks_x = (x_new.shape[0] + interp_threads - 1) // interp_threads
+        interp_grid = (interp_blocks_x, nin, 1)
+        
+        akima_linear_kernel[interp_grid, interp_threads](
+            x_new, x, y, linear_slopes, nin, ngroups, nnans, result
+        )
+    
+    def linear_interpolate_cpu(self, x_new, x, y, nin, ngroups, nnans, result):
+        """
+        Optimized CPU interpolation with precomputed slopes and parallel execution
+        """
+        # Step 1: Precompute all linear slopes
+        linear_slopes = precompute_all_linear_slopes_cpu(x, y, nin, ngroups, nnans)
+        
+        # Step 2: Main interpolation with parallelization
+        akima_linear_kernel_cpu(x_new, x, y, linear_slopes, 
+                                         nin, ngroups, nnans, result)
+    
+    def cubic_interpolate_gpu(self, x_new, x, y, nin, ngroups, nnans, result):
         """
         Optimized GPU interpolation with precomputed slopes and binary search
         """
@@ -665,7 +754,7 @@ class AkimaInterpolant1D():
             x_new, x, y, linear_slopes, spline_slopes, nin, ngroups, nnans, result
         )
     
-    def interpolate_cpu(self, x_new, x, y, nin, ngroups, nnans, result):
+    def cubic_interpolate_cpu(self, x_new, x, y, nin, ngroups, nnans, result):
         """
         Optimized CPU interpolation with precomputed slopes and parallel execution
         """
@@ -679,6 +768,70 @@ class AkimaInterpolant1D():
         akima_spline_kernel_cpu_optimized(x_new, x, y, linear_slopes, spline_slopes, 
                                          nin, ngroups, nnans, result)
         
+
+@cuda.jit
+def akima_linear_kernel_gpu_multidim(x_new, x, y, linear_slopes,
+                                     nin, ngroups, nnans, result):
+    """GPU kernel for multidimensional x_new arrays"""
+    i = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x  # x_new index within group
+    j = cuda.blockIdx.y  # group index
+    
+    if j >= nin:
+        return
+    
+    start = j * ngroups
+    stop = (j + 1) * ngroups - nnans[j]
+    
+    # x_new is now multidimensional: x_new[j, i] instead of x_new[i]
+    x_new_group_size = x_new.shape[1]  # assuming x_new.shape = (nin, n_f)
+    
+    if i >= x_new_group_size:
+        return
+    
+    special_index = j * x_new_group_size + i
+    x_target = x_new[j, i]
+    
+    # Handle edge case
+    if x_target >= x[stop - 1]:
+        result[special_index] = y[stop - 1]
+        return
+    
+    # Use binary search for interval finding
+    idx = binary_search_gpu(x, x_target, start, stop)
+    
+    
+    # Linear interpolation
+    mi = linear_slopes[idx]
+    result[special_index] = y[idx] + mi * (x_target - x[idx])
+
+@numba.jit(nopython=True, parallel=True)
+def akima_linear_kernel_cpu_multidim(x_new, x, y, linear_slopes,
+                                     nin, ngroups, nnans, result):
+    """CPU kernel for multidimensional x_new arrays"""
+    
+    # Parallel loop over groups
+    for j in numba.prange(nin):
+        start = j * ngroups
+        stop = (j + 1) * ngroups - nnans[j]
+        
+        x_new_group_size = x_new.shape[1]  # x_new.shape = (nin, n_f)
+        
+        # Sequential loop over interpolation points for this group
+        for i in range(x_new_group_size):
+            special_index = j * x_new_group_size + i
+            x_target = x_new[j, i]
+            
+            # Handle edge case
+            if x_target >= x[stop - 1]:
+                result[special_index] = y[stop - 1]
+                continue
+            
+            # Use binary search for interval finding
+            idx = binary_search_cpu(x, x_target, start, stop)
+            # Linear interpolation
+            mi = linear_slopes[idx]
+            result[special_index] = y[idx] + mi * (x_target - x[idx])
+
 
 @cuda.jit
 def akima_spline_kernel_gpu_multidim(x_new, x, y, linear_slopes, spline_slopes, 
@@ -868,12 +1021,52 @@ class AkimaInterpolant1DMultiDim(AkimaInterpolant1D):
     
     def interpolate_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
         """Dispatch to appropriate multidimensional interpolation method"""
-        if hasattr(self, 'interpolate_gpu') and self.xp != np:
-            self.interpolate_gpu_multidim(x_new, x, y, nin, ngroups, nnans, result)
+        if hasattr(self, 'cubic_interpolate_gpu') and self.xp != np:
+            self.cubic_interpolate_gpu_multidim(x_new, x, y, nin, ngroups, nnans, result) if self.order == 'cubic' else self.linear_interpolate_gpu_multidim(x_new, x, y, nin, ngroups, nnans, result)
         else:
-            self.interpolate_cpu_multidim(x_new, x, y, nin, ngroups, nnans, result)
+            self.cubic_interpolate_cpu_multidim(x_new, x, y, nin, ngroups, nnans, result) if self.order == 'cubic' else self.linear_interpolate_cpu_multidim(x_new, x, y, nin, ngroups, nnans, result)
+
+    def linear_interpolate_gpu_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
+        """
+        GPU interpolation for multidimensional x_new arrays
+        """
+        # Allocate temporary arrays for precomputed slopes
+        total_points = nin * ngroups
+        linear_slopes = self.xp.zeros(total_points)
+        
+        # Grid configuration for preprocessing (same as before)
+        max_points_per_group = ngroups
+        precompute_threads = min(self.threadsperblock, max_points_per_group)
+        precompute_blocks_x = (max_points_per_group + precompute_threads - 1) // precompute_threads
+        precompute_grid = (precompute_blocks_x, nin, 1)
+        
+        # Step 1: Precompute linear slopes
+        precompute_slopes_kernel[precompute_grid, precompute_threads](
+            x, y, linear_slopes, nin, ngroups, nnans
+        )
+        
+        # Step 2: Main interpolation with multidimensional x_new
+        n_interp = x_new.shape[1]
+        interp_threads = min(self.threadsperblock, n_interp)
+        interp_blocks_x = (n_interp + interp_threads - 1) // interp_threads
+        interp_grid = (interp_blocks_x, nin, 1)
+        
+        akima_linear_kernel_gpu_multidim[interp_grid, interp_threads](
+            x_new, x, y, linear_slopes, nin, ngroups, nnans, result
+        )
     
-    def interpolate_gpu_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
+    def linear_interpolate_cpu_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
+        """
+        CPU interpolation for multidimensional x_new arrays
+        """
+        # Step 1: Precompute all linear slopes
+        linear_slopes = precompute_all_linear_slopes_cpu(x, y, nin, ngroups, nnans)
+        
+        # Step 2: Main interpolation with multidimensional x_new
+        akima_linear_kernel_cpu_multidim(x_new, x, y, linear_slopes,
+                                        nin, ngroups, nnans, result)
+    
+    def cubic_interpolate_gpu_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
         """
         GPU interpolation for multidimensional x_new arrays
         """
@@ -908,7 +1101,7 @@ class AkimaInterpolant1DMultiDim(AkimaInterpolant1D):
             x_new, x, y, linear_slopes, spline_slopes, nin, ngroups, nnans, result
         )
     
-    def interpolate_cpu_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
+    def cubic_interpolate_cpu_multidim(self, x_new, x, y, nin, ngroups, nnans, result):
         """
         CPU interpolation for multidimensional x_new arrays
         """
@@ -949,6 +1142,7 @@ class AkimaInterpolant1DFlexible(AkimaInterpolant1D):
         return AkimaInterpolant1DMultiDim(
             use_gpu=(self.xp != np), 
             threadsperblock=self.threadsperblock,
+            order=self.order,
             sanitize=self.sanitize,
             verbose=self.verbose
         )
