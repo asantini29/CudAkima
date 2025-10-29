@@ -15,4 +15,4 @@ from .cudakima import __description__
 from .cudakima import __author__
 from .cudakima import __author_email__
 
-from .akima import AkimaInterpolant1D
+from .akima import AkimaInterpolant1D, AkimaInterpolant1DMultiDim, AkimaInterpolant1DFlexible
