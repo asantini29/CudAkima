@@ -70,7 +70,7 @@ If you use CudAkima in your research, you can cite it in the following way:
   month        = oct,
   year         = 2024,
   publisher    = {Zenodo},
-  version      = {v0.0.1},
+  version      = {v0.2.2},
   doi          = {10.5281/zenodo.13919394},
   url          = {https://doi.org/10.5281/zenodo.13919394}
 }
