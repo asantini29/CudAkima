@@ -24,16 +24,17 @@ Check out the examples directory for more info and comparisons.
 
 CudAkima depends only on `numba` and `numpy`. It also requires `cupy` to be used on GPUs.
 
-## Installing:
-1. Clone the repository:
- ```
- git clone https://github.com/asantini29/CudAkima.git
- cd CudAkima
- ```
-2. Run install:
- ```
- python setup.py install
- ```
+## Installation
+This project is managed by <a href="https://docs.astral.sh/uv/">uv</a>. To set up the development environment, first clone the repository:
+```
+git clone https://github.com/asantini29/CudAkima.git
+cd CudAkima
+uv sync
+```
+This will create a virtual environment and install all necessary dependencies. Run your commands within this environment using
+```
+uv run <YOUR-COMMAND>
+```
 
 ## Versioning
 
