@@ -40,7 +40,7 @@ uv run <YOUR-COMMAND>
 
 We use [SemVer](http://semver.org/) for versioning. 
 
-Current Version: 0.0.2
+Current Version: 0.2.2
 
 ## Authors
 
