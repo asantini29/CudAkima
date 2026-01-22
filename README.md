@@ -25,7 +25,18 @@ Check out the examples directory for more info and comparisons.
 CudAkima depends only on `numba` and `numpy`. It also requires `cupy` to be used on GPUs.
 
 ## Installation
-This project is managed by <a href="https://docs.astral.sh/uv/">uv</a>. To set up the development environment, first clone the repository:
+This project is managed by <a href="https://docs.astral.sh/uv/">uv</a>. `uv` can be installed with:
+```
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# or with Homebrew
+brew install uv
+
+# or with pipx
+pipx install uv
+```
+To set up the development environment, first clone the repository:
 ```
 git clone https://github.com/asantini29/CudAkima.git
 cd CudAkima
