@@ -21,10 +21,7 @@ wheels/
 *.egg
 
 # Virtual environments
-<<<<<<< HEAD
-=======
 .venv/
->>>>>>> copilot/move-to-uv-pyproject-structure
 venv/
 ENV/
 env/
