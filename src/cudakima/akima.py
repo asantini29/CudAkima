@@ -151,7 +151,7 @@ class AkimaInterpolant1D():
         else:
             self.sanitize_input = self.pass_input
             if self.verbose:
-                print('Skipping input sorting. The user must make sure that the input data are sorted in anscending order with eventual NaNs values at the end of the arrays.')
+                print('Skipping input sorting. The user must make sure that the input data are sorted in ascending order with eventual NaNs values at the end of the arrays.')
     
 
     def __call__(self, x_new, x, y, **kwargs):

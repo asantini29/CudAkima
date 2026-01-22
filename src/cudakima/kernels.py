@@ -144,7 +144,6 @@ def splineslope_cpu(x, y, idx, start, stop):
         return (3*linearslope_cpu(x, y, idx) - linearslope_cpu(x, y, idx+1)) / 2
     
     elif (idx == start + 1):
-        #? mi_1 = linearslope_cpu(x, y, idx-1)
         return (abs(linearslope_cpu(x, y, idx+1) - linearslope_cpu(x, y, idx)) * linearslope_cpu(x, y, idx-1) \
         + abs(linearslope_cpu(x, y, idx) - linearslope_cpu(x, y, idx-1)) * linearslope_cpu(x, y, idx)) \
         / (abs(linearslope_cpu(x, y, idx+1) - linearslope_cpu(x, y, idx)) + abs(linearslope_cpu(x, y, idx) - linearslope_cpu(x, y, idx-1)))
