@@ -22,6 +22,26 @@ import numpy as np
 
 @cuda.jit(device=True)
 def linearslope_gpu(x, y, idx):
+    """
+    Compute the linear slope between two consecutive points on GPU.
+    
+    This device function calculates the slope (derivative) between points
+    at indices idx and idx+1.
+    
+    Parameters
+    ----------
+    x : array_like
+        X-coordinates of data points
+    y : array_like
+        Y-coordinates of data points
+    idx : int
+        Index of the first point in the pair
+        
+    Returns
+    -------
+    float
+        Linear slope (dy/dx) between points idx and idx+1
+    """
     dx = x[idx + 1] - x[idx]
     dy = y[idx + 1] - y[idx]
     m = dy / dx
@@ -29,6 +49,36 @@ def linearslope_gpu(x, y, idx):
 
 @cuda.jit(device=True)
 def splineslope_gpu(x, y, idx, start, stop):
+    """
+    Compute the Akima spline slope at a given point on GPU.
+    
+    This device function calculates the spline slope using the Akima algorithm,
+    which provides smooth interpolation with special handling for boundary conditions.
+    Requires at least 4 points due to boundary conditions.
+    
+    Parameters
+    ----------
+    x : array_like
+        X-coordinates of data points
+    y : array_like
+        Y-coordinates of data points
+    idx : int
+        Index at which to compute the spline slope
+    start : int
+        Starting index of the data segment
+    stop : int
+        Ending index of the data segment (exclusive)
+        
+    Returns
+    -------
+    float
+        Akima spline slope at the specified point
+        
+    Notes
+    -----
+    The Akima spline uses weighted averages of neighboring slopes with special
+    boundary conditions at the endpoints and near-endpoints.
+    """
 
     #! with these boundary conditions I ALWAYS NEED AT LEAST FOUR POINTS
 
@@ -64,6 +114,30 @@ def splineslope_gpu(x, y, idx, start, stop):
 
 @cuda.jit
 def akima_spline_kernel_gpu(x_new, x, y, n_in, ngroups, nnans, result):
+    """
+    GPU kernel for Akima spline interpolation.
+    
+    This kernel performs parallel Akima spline interpolation across multiple
+    groups of data. Falls back to linear interpolation for groups with less
+    than 4 valid points.
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (n_f,)
+        New x-coordinates at which to interpolate
+    x : array_like, shape (n_in * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (n_in * ngroups,)
+        Flattened array of y-coordinates for all groups
+    n_in : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group (including NaNs)
+    nnans : array_like, shape (n_in,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (n_in * n_f,)
+        Output array for interpolated values
+    """
     start1 = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
     increment1 = cuda.blockDim.x * cuda.gridDim.x
 
@@ -129,6 +203,26 @@ def akima_spline_kernel_gpu(x_new, x, y, n_in, ngroups, nnans, result):
 
 @numba.jit(nopython=True)
 def linearslope_cpu(x, y, idx):
+    """
+    Compute the linear slope between two consecutive points on CPU.
+    
+    This function calculates the slope (derivative) between points
+    at indices idx and idx+1.
+    
+    Parameters
+    ----------
+    x : array_like
+        X-coordinates of data points
+    y : array_like
+        Y-coordinates of data points
+    idx : int
+        Index of the first point in the pair
+        
+    Returns
+    -------
+    float
+        Linear slope (dy/dx) between points idx and idx+1
+    """
     dx = x[idx + 1] - x[idx]
     dy = y[idx + 1] - y[idx]
     m = dy / dx
@@ -136,6 +230,36 @@ def linearslope_cpu(x, y, idx):
 
 @numba.jit(nopython=True)
 def splineslope_cpu(x, y, idx, start, stop):
+    """
+    Compute the Akima spline slope at a given point on CPU.
+    
+    This function calculates the spline slope using the Akima algorithm,
+    which provides smooth interpolation with special handling for boundary conditions.
+    Requires at least 4 points due to boundary conditions.
+    
+    Parameters
+    ----------
+    x : array_like
+        X-coordinates of data points
+    y : array_like
+        Y-coordinates of data points
+    idx : int
+        Index at which to compute the spline slope
+    start : int
+        Starting index of the data segment
+    stop : int
+        Ending index of the data segment (exclusive)
+        
+    Returns
+    -------
+    float
+        Akima spline slope at the specified point
+        
+    Notes
+    -----
+    The Akima spline uses weighted averages of neighboring slopes with special
+    boundary conditions at the endpoints and near-endpoints.
+    """
 
     #! with these boundary conditions I ALWAYS NEED AT LEAST FOUR POINTS
 
@@ -171,6 +295,30 @@ def splineslope_cpu(x, y, idx, start, stop):
 
 @numba.jit(nopython=True)
 def akima_spline_kernel_cpu(x_new, x, y, n_in, ngroups, nnans, result):
+    """
+    CPU kernel for Akima spline interpolation.
+    
+    This function performs Akima spline interpolation across multiple groups
+    of data. Falls back to linear interpolation for groups with less than 4
+    valid points.
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (n_f,)
+        New x-coordinates at which to interpolate
+    x : array_like, shape (n_in * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (n_in * ngroups,)
+        Flattened array of y-coordinates for all groups
+    n_in : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group (including NaNs)
+    nnans : array_like, shape (n_in,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (n_in * n_f,)
+        Output array for interpolated values
+    """
     for j in range(n_in):
 
         # find the first and last non-NaN values
@@ -226,7 +374,28 @@ def akima_spline_kernel_cpu(x_new, x, y, n_in, ngroups, nnans, result):
 
 @cuda.jit(device=True)
 def binary_search_gpu(x, target, start, stop):
-    """Binary search for interval location - much faster than linear search"""
+    """
+    Binary search for interval location on GPU.
+    
+    This device function performs binary search to find the interval [x[i], x[i+1])
+    that contains the target value. Much faster than linear search for large arrays.
+    
+    Parameters
+    ----------
+    x : array_like
+        Sorted array of x-coordinates
+    target : float
+        Value to search for
+    start : int
+        Starting index of the search range
+    stop : int
+        Ending index of the search range (exclusive)
+        
+    Returns
+    -------
+    int
+        Index i such that x[i] <= target < x[i+1]
+    """
     left = start
     right = stop - 1
     
@@ -245,7 +414,27 @@ def binary_search_gpu(x, target, start, stop):
 
 @cuda.jit
 def precompute_slopes_kernel(x, y, slopes, nin, ngroups, nnans):
-    """Precompute all linear slopes in parallel"""
+    """
+    GPU kernel to precompute all linear slopes in parallel.
+    
+    This kernel computes linear slopes between consecutive points for all groups,
+    storing them for later use in interpolation kernels.
+    
+    Parameters
+    ----------
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    slopes : array_like, shape (nin * ngroups,)
+        Output array for computed linear slopes
+    nin : int
+        Number of groups
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    """
     idx = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
     group_idx = cuda.blockIdx.y
     
@@ -264,7 +453,29 @@ def precompute_slopes_kernel(x, y, slopes, nin, ngroups, nnans):
 
 @cuda.jit
 def precompute_spline_slopes_kernel(x, y, linear_slopes, spline_slopes, nin, ngroups, nnans):
-    """Precompute spline slopes in parallel"""
+    """
+    GPU kernel to precompute Akima spline slopes in parallel.
+    
+    This kernel computes Akima spline slopes at all points using precomputed
+    linear slopes, storing them for later use in interpolation kernels.
+    
+    Parameters
+    ----------
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    spline_slopes : array_like, shape (nin * ngroups,)
+        Output array for computed Akima spline slopes
+    nin : int
+        Number of groups
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    """
     idx = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
     group_idx = cuda.blockIdx.y
     
@@ -282,7 +493,32 @@ def precompute_spline_slopes_kernel(x, y, linear_slopes, spline_slopes, nin, ngr
 
 @cuda.jit(device=True)
 def splineslope_gpu_optimized(x, y, linear_slopes, idx, start, stop):
-    """Optimized spline slope computation using precomputed linear slopes"""
+    """
+    Optimized Akima spline slope computation using precomputed linear slopes on GPU.
+    
+    This device function computes Akima spline slopes more efficiently by reusing
+    precomputed linear slopes instead of recalculating them.
+    
+    Parameters
+    ----------
+    x : array_like
+        X-coordinates of data points
+    y : array_like
+        Y-coordinates of data points
+    linear_slopes : array_like
+        Precomputed linear slopes between consecutive points
+    idx : int
+        Index at which to compute the spline slope
+    start : int
+        Starting index of the data segment
+    stop : int
+        Ending index of the data segment (exclusive)
+        
+    Returns
+    -------
+    float
+        Akima spline slope at the specified point
+    """
     # Boundary conditions
     if idx == start:
         return (3 * linear_slopes[idx] - linear_slopes[idx + 1]) / 2
@@ -320,7 +556,34 @@ def splineslope_gpu_optimized(x, y, linear_slopes, idx, start, stop):
 @cuda.jit
 def akima_spline_kernel_optimized(x_new, x, y, linear_slopes, spline_slopes, 
                                  nin, ngroups, nnans, result):
-    """Optimized main interpolation kernel"""
+    """
+    Optimized GPU kernel for Akima spline interpolation with precomputed slopes.
+    
+    This kernel performs fast parallel Akima spline interpolation using
+    precomputed linear and spline slopes. Uses binary search for efficient
+    interval location.
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (n_f,)
+        New x-coordinates at which to interpolate
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    spline_slopes : array_like, shape (nin * ngroups,)
+        Precomputed Akima spline slopes at all points
+    nin : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (nin * n_f,)
+        Output array for interpolated values
+    """
     i = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x  # x_new index
     j = cuda.blockIdx.y  # group index
     
@@ -361,6 +624,31 @@ def akima_spline_kernel_optimized(x_new, x, y, linear_slopes, spline_slopes,
 
 @cuda.jit
 def akima_linear_kernel(x_new, x, y, linear_slopes,nin, ngroups, nnans, result):
+    """
+    GPU kernel for linear interpolation with precomputed slopes.
+    
+    This kernel performs fast parallel linear interpolation using precomputed
+    slopes and binary search for interval location.
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (n_f,)
+        New x-coordinates at which to interpolate
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    nin : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (nin * n_f,)
+        Output array for interpolated values
+    """
     i = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x  # x_new index
     j = cuda.blockIdx.y  # group index
     
@@ -385,7 +673,28 @@ def akima_linear_kernel(x_new, x, y, linear_slopes,nin, ngroups, nnans, result):
 
 @numba.jit(nopython=True)
 def binary_search_cpu(x, target, start, stop):
-    """Binary search for interval location - CPU version"""
+    """
+    Binary search for interval location on CPU.
+    
+    This function performs binary search to find the interval [x[i], x[i+1])
+    that contains the target value. Much faster than linear search for large arrays.
+    
+    Parameters
+    ----------
+    x : array_like
+        Sorted array of x-coordinates
+    target : float
+        Value to search for
+    start : int
+        Starting index of the search range
+    stop : int
+        Ending index of the search range (exclusive)
+        
+    Returns
+    -------
+    int
+        Index i such that x[i] <= target < x[i+1]
+    """
     left = start
     right = stop - 1
     
@@ -404,7 +713,30 @@ def binary_search_cpu(x, target, start, stop):
 
 @numba.jit(nopython=True)
 def precompute_all_linear_slopes_cpu(x, y, nin, ngroups, nnans):
-    """Precompute all linear slopes for all groups"""
+    """
+    Precompute all linear slopes for all groups on CPU.
+    
+    This function computes linear slopes between consecutive points for all groups,
+    storing them for later use in interpolation functions.
+    
+    Parameters
+    ----------
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    nin : int
+        Number of groups
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+        
+    Returns
+    -------
+    ndarray, shape (nin * ngroups,)
+        Array of computed linear slopes
+    """
     total_points = nin * ngroups
     linear_slopes = np.zeros(total_points)
     
@@ -421,7 +753,32 @@ def precompute_all_linear_slopes_cpu(x, y, nin, ngroups, nnans):
 
 @numba.jit(nopython=True)
 def precompute_all_spline_slopes_cpu(x, y, linear_slopes, nin, ngroups, nnans):
-    """Precompute all spline slopes for all groups"""
+    """
+    Precompute all Akima spline slopes for all groups on CPU.
+    
+    This function computes Akima spline slopes at all points using precomputed
+    linear slopes, storing them for later use in interpolation functions.
+    
+    Parameters
+    ----------
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    nin : int
+        Number of groups
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+        
+    Returns
+    -------
+    ndarray, shape (nin * ngroups,)
+        Array of computed Akima spline slopes
+    """
     total_points = nin * ngroups
     spline_slopes = np.zeros(total_points)
     
@@ -439,7 +796,32 @@ def precompute_all_spline_slopes_cpu(x, y, linear_slopes, nin, ngroups, nnans):
 
 @numba.jit(nopython=True)
 def splineslope_cpu_optimized(x, y, linear_slopes, idx, start, stop):
-    """Optimized spline slope computation using precomputed linear slopes"""
+    """
+    Optimized Akima spline slope computation using precomputed linear slopes on CPU.
+    
+    This function computes Akima spline slopes more efficiently by reusing
+    precomputed linear slopes instead of recalculating them.
+    
+    Parameters
+    ----------
+    x : array_like
+        X-coordinates of data points
+    y : array_like
+        Y-coordinates of data points
+    linear_slopes : array_like
+        Precomputed linear slopes between consecutive points
+    idx : int
+        Index at which to compute the spline slope
+    start : int
+        Starting index of the data segment
+    stop : int
+        Ending index of the data segment (exclusive)
+        
+    Returns
+    -------
+    float
+        Akima spline slope at the specified point
+    """
     # Boundary conditions
     if idx == start:
         return (3 * linear_slopes[idx] - linear_slopes[idx + 1]) / 2
@@ -477,7 +859,34 @@ def splineslope_cpu_optimized(x, y, linear_slopes, idx, start, stop):
 @numba.jit(nopython=True, parallel=True)
 def akima_spline_kernel_cpu_optimized(x_new, x, y, linear_slopes, spline_slopes, 
                                      nin, ngroups, nnans, result):
-    """Optimized CPU kernel with precomputed slopes and parallel execution"""
+    """
+    Optimized CPU kernel for Akima spline interpolation with precomputed slopes.
+    
+    This function performs fast parallel Akima spline interpolation using
+    precomputed linear and spline slopes. Uses binary search for efficient
+    interval location and numba parallel execution.
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (n_f,)
+        New x-coordinates at which to interpolate
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    spline_slopes : array_like, shape (nin * ngroups,)
+        Precomputed Akima spline slopes at all points
+    nin : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (nin * n_f,)
+        Output array for interpolated values
+    """
     
     # Parallel loop over groups
     for j in numba.prange(nin):
@@ -519,6 +928,31 @@ def akima_spline_kernel_cpu_optimized(x_new, x, y, linear_slopes, spline_slopes,
 
 @numba.jit(nopython=True, parallel=True)
 def akima_linear_kernel_cpu(x_new, x, y, linear_slopes,nin, ngroups, nnans, result):
+    """
+    CPU kernel for linear interpolation with precomputed slopes.
+    
+    This function performs fast parallel linear interpolation using precomputed
+    slopes and binary search for interval location.
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (n_f,)
+        New x-coordinates at which to interpolate
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    nin : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (nin * n_f,)
+        Output array for interpolated values
+    """
     for j in range(nin):
         start = j * ngroups
         stop = (j + 1) * ngroups - nnans[j]
@@ -544,7 +978,31 @@ def akima_linear_kernel_cpu(x_new, x, y, linear_slopes,nin, ngroups, nnans, resu
 @cuda.jit
 def akima_linear_kernel_gpu_multidim(x_new, x, y, linear_slopes,
                                      nin, ngroups, nnans, result):
-    """GPU kernel for multidimensional x_new arrays"""
+    """
+    GPU kernel for linear interpolation with multidimensional x_new arrays.
+    
+    This kernel handles cases where each group has its own set of interpolation
+    points (x_new is 2D with shape (nin, n_f)).
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (nin, n_f)
+        New x-coordinates at which to interpolate, different for each group
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    nin : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (nin * n_f,)
+        Output array for interpolated values
+    """
     i = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x  # x_new index within group
     j = cuda.blockIdx.y  # group index
     
@@ -579,7 +1037,31 @@ def akima_linear_kernel_gpu_multidim(x_new, x, y, linear_slopes,
 @numba.jit(nopython=True, parallel=True)
 def akima_linear_kernel_cpu_multidim(x_new, x, y, linear_slopes,
                                      nin, ngroups, nnans, result):
-    """CPU kernel for multidimensional x_new arrays"""
+    """
+    CPU kernel for linear interpolation with multidimensional x_new arrays.
+    
+    This function handles cases where each group has its own set of interpolation
+    points (x_new is 2D with shape (nin, n_f)).
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (nin, n_f)
+        New x-coordinates at which to interpolate, different for each group
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    nin : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (nin * n_f,)
+        Output array for interpolated values
+    """
     
     # Parallel loop over groups
     for j in numba.prange(nin):
@@ -608,7 +1090,33 @@ def akima_linear_kernel_cpu_multidim(x_new, x, y, linear_slopes,
 @cuda.jit
 def akima_spline_kernel_gpu_multidim(x_new, x, y, linear_slopes, spline_slopes, 
                                      nin, ngroups, nnans, result):
-    """GPU kernel for multidimensional x_new arrays"""
+    """
+    GPU kernel for Akima spline interpolation with multidimensional x_new arrays.
+    
+    This kernel handles cases where each group has its own set of interpolation
+    points (x_new is 2D with shape (nin, n_f)).
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (nin, n_f)
+        New x-coordinates at which to interpolate, different for each group
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    spline_slopes : array_like, shape (nin * ngroups,)
+        Precomputed Akima spline slopes at all points
+    nin : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (nin * n_f,)
+        Output array for interpolated values
+    """
     i = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x  # x_new index within group
     j = cuda.blockIdx.y  # group index
     
@@ -658,7 +1166,33 @@ def akima_spline_kernel_gpu_multidim(x_new, x, y, linear_slopes, spline_slopes,
 @numba.jit(nopython=True, parallel=True)
 def akima_spline_kernel_cpu_multidim(x_new, x, y, linear_slopes, spline_slopes, 
                                      nin, ngroups, nnans, result):
-    """CPU kernel for multidimensional x_new arrays"""
+    """
+    CPU kernel for Akima spline interpolation with multidimensional x_new arrays.
+    
+    This function handles cases where each group has its own set of interpolation
+    points (x_new is 2D with shape (nin, n_f)).
+    
+    Parameters
+    ----------
+    x_new : array_like, shape (nin, n_f)
+        New x-coordinates at which to interpolate, different for each group
+    x : array_like, shape (nin * ngroups,)
+        Flattened array of x-coordinates for all groups
+    y : array_like, shape (nin * ngroups,)
+        Flattened array of y-coordinates for all groups
+    linear_slopes : array_like, shape (nin * ngroups,)
+        Precomputed linear slopes between consecutive points
+    spline_slopes : array_like, shape (nin * ngroups,)
+        Precomputed Akima spline slopes at all points
+    nin : int
+        Number of groups to interpolate
+    ngroups : int
+        Maximum number of points per group
+    nnans : array_like, shape (nin,)
+        Number of NaN values at the end of each group
+    result : array_like, shape (nin * n_f,)
+        Output array for interpolated values
+    """
     
     # Parallel loop over groups
     for j in numba.prange(nin):

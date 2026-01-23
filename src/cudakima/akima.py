@@ -48,25 +48,73 @@ class AkimaInterpolant1D():
     """
     GPU-accelerated parallel Akima Splines.
     
-    This class provides a parallel implementation of the Akima spline interpolation algorithm. It has a CPU version as well. 
-    The interpolation can be performed simultaneously on array of different sizes. This is achieved by passing as inputs multidimensional arrays padded with NaN values.
-    The interpolation is performed along the last axis of the input arrays, which must have dimension equal to the one of the longest array in the batch.
+    This class provides a parallel implementation of the Akima spline interpolation 
+    algorithm with both GPU and CPU support. The interpolation can be performed 
+    simultaneously on arrays of different sizes by passing multidimensional arrays 
+    padded with NaN values. The interpolation is performed along the last axis of 
+    the input arrays.
 
-    Example:
-    If you have a batch of 3 arrays with 5, 6 and 7 points respectively, you can interpolate them all at once by passing a 3D array with shape=(3, 7) and padding the arrays with NaN values.:
-    ```
-    x = np.array([[1, 2, 3, 4, 5, np.nan, np.nan], [1, 2, 3, 4, 5, 6, np.nan], [1, 2, 3, 4, 5, 6, 7]])
-    y = np.array([[1, 4, 9, 16, 25, np.nan, np.nan], [1, 4, 9, 16, 25, 36, np.nan], [1, 4, 9, 16, 25, 36, 49]])
-    x_new = np.linspace(1, 5, 100)
-    interpolant = AkimaInterpolant1D()
-    y_new = interpolant(x_new, x, y)
-    ```
-
-    Parameters:
-        use_gpu (bool): If True, the interpolation is performed on the GPU if available. If False, the interpolation is performed on the CPU.
-        threadsperblock (int): The number of threads per block to use for the GPU implementation. This parameter is ignored if `use_gpu` is False.
-        sanitize (bool): If True, the input data are sorted in ascending order. If False, the input data must be already sorted.
-        verbose (bool): If True, print information about the interpolation process. Default is False.
+    Parameters
+    ----------
+    use_gpu : bool, optional
+        If True, use GPU acceleration if CUDA and CuPy are available. If False or 
+        if GPU is unavailable, fall back to CPU implementation. Default is True.
+    threadsperblock : int, optional
+        Number of threads per block for GPU kernel execution. Ignored if using CPU.
+        Default is 64.
+    order : {'linear', 'cubic'}, optional
+        Interpolation order. 'cubic' uses Akima spline interpolation, 'linear' uses
+        linear interpolation. Default is 'cubic'.
+    sanitize : bool, optional
+        If True, sort input data in ascending order. If False, assumes input data
+        are already sorted. Set to False to improve performance when data is 
+        pre-sorted. Default is False.
+    verbose : bool, optional
+        If True, print information about the interpolation process. Default is False.
+    
+    Attributes
+    ----------
+    xp : module
+        Either numpy or cupy, depending on GPU availability
+    order : str
+        The interpolation order being used
+    sanitize : bool
+        Whether input sanitization is enabled
+    threadsperblock : int
+        Number of threads per GPU block
+        
+    Examples
+    --------
+    Basic usage with batch interpolation:
+    
+    >>> import numpy as np
+    >>> from cudakima import AkimaInterpolant1D
+    >>> 
+    >>> # Batch of 3 arrays with different lengths (5, 6, 7 points)
+    >>> x = np.array([[1, 2, 3, 4, 5, np.nan, np.nan], 
+    ...               [1, 2, 3, 4, 5, 6, np.nan], 
+    ...               [1, 2, 3, 4, 5, 6, 7]])
+    >>> y = np.array([[1, 4, 9, 16, 25, np.nan, np.nan], 
+    ...               [1, 4, 9, 16, 25, 36, np.nan], 
+    ...               [1, 4, 9, 16, 25, 36, 49]])
+    >>> 
+    >>> # Create interpolator and interpolate
+    >>> interpolant = AkimaInterpolant1D()
+    >>> x_new = np.linspace(1, 5, 100)
+    >>> y_new = interpolant(x_new, x, y)  # Shape: (3, 100)
+    
+    Using linear interpolation on CPU:
+    
+    >>> interpolant = AkimaInterpolant1D(use_gpu=False, order='linear')
+    >>> y_new = interpolant(x_new, x, y)
+    
+    Notes
+    -----
+    - Requires at least 4 finite points for Akima spline interpolation due to 
+      boundary conditions. Falls back to linear interpolation for fewer points.
+    - NaN values must be placed at the end of each array in the batch.
+    - All arrays in a batch must be padded to the same length (the length of the 
+      longest array).
 
     """
     def __init__(self, use_gpu=True, threadsperblock=64, order='cubic', sanitize=False, verbose=False):
@@ -106,15 +154,26 @@ class AkimaInterpolant1D():
 
     def sort_input(self, x, y):
         """
-        Check that the input data have the right shape and sort them to ensure that all the arrays are in the correct order.
+        Sort input data in ascending order along the last axis.
 
-        Parameters:
-            x (ndarray): The x-values of the data points. Shape=(..., n).
-            y (ndarray): The y-values of the data points. Shape=(..., n).
+        Parameters
+        ----------
+        x : array_like
+            The x-values of the data points. Shape (..., n).
+        y : array_like
+            The y-values of the data points. Shape (..., n).
 
-        Returns:
-            x (ndarray): The sorted x values.
-            y (ndarray): The y values, sorted accordingly to `x`.
+        Returns
+        -------
+        x_sorted : ndarray
+            The sorted x values.
+        y_sorted : ndarray
+            The y values, sorted according to x.
+            
+        Notes
+        -----
+        This method ensures that x values are in ascending order, which is required
+        for the interpolation algorithm to work correctly.
         """
         x = self.xp.asarray(x)
         y = self.xp.asarray(y)
@@ -129,17 +188,29 @@ class AkimaInterpolant1D():
     
 
     def pass_input(self, x, y):
-
         """
-        Skip the sorting of the input data. This is useful to save computational time when the input data are already sorted.
+        Pass input data through without sorting.
+        
+        This is used when sanitize=False to skip the sorting step for performance.
 
-        Parameters:
-            x (ndarray): The x-values of the data points. Shape=(..., n).
-            y (ndarray): The y-values of the data points. Shape=(..., n).
+        Parameters
+        ----------
+        x : array_like
+            The x-values of the data points. Shape (..., n).
+        y : array_like
+            The y-values of the data points. Shape (..., n).
 
-        Returns:
-            x (ndarray): The input `x` array.
-            y (ndarray): The input `y` array.
+        Returns
+        -------
+        x : ndarray
+            The input x array (unchanged).
+        y : ndarray
+            The input y array (unchanged).
+            
+        Notes
+        -----
+        When using this method, the user must ensure that input data are already
+        sorted in ascending order with NaN values at the end.
         """
 
         return x, y
@@ -156,18 +227,42 @@ class AkimaInterpolant1D():
 
     def __call__(self, x_new, x, y, **kwargs):
         """
-        Interpolates the values of `x_new` based on the given `x` and `y` data points.
+        Interpolate at new x-values.
 
-        Parameters:
-            x_new (ndarray): The new x-values to interpolate. If `self.sanitize` is `False`, they must be sorted in ascending order. Shape=(n_f,).
-            x (ndarray): The x-values of the data points. If `self.sanitize` is `False`, they must be sorted in ascending order. Shape=(..., n).
-                         If along some axis there are less than `n` points to interpolate, the remaining values must be NaN. 
-            y (ndarray): The y-values of the data points. Shape=(..., n).
-                         If along some axis there are less than `n` points to interpolate, the remaining values must be NaN.
-            **kwargs: Additional keyword arguments. Added for future flexibility.
+        Parameters
+        ----------
+        x_new : array_like, shape (n_f,)
+            New x-values at which to interpolate. If sanitize=False, must be sorted
+            in ascending order.
+        x : array_like, shape (..., n)
+            X-values of the data points. If sanitize=False, must be sorted in 
+            ascending order along the last axis. Arrays with fewer than n points
+            should be padded with NaN values at the end.
+        y : array_like, shape (..., n)
+            Y-values of the data points. Shape must match x. Arrays with fewer 
+            than n points should be padded with NaN values at the end.
+        **kwargs : dict, optional
+            Additional keyword arguments (reserved for future use).
 
-        Returns:
-            ndarray: The interpolated values of `x_new`. Shape=(..., n_f).
+        Returns
+        -------
+        y_new : ndarray, shape (..., n_f)
+            Interpolated values at x_new positions.
+            
+        Examples
+        --------
+        >>> import numpy as np
+        >>> x = np.array([1, 2, 3, 4, 5])
+        >>> y = np.array([1, 4, 9, 16, 25])
+        >>> interpolant = AkimaInterpolant1D()
+        >>> x_new = np.array([1.5, 2.5, 3.5])
+        >>> y_new = interpolant(x_new, x, y)
+        
+        Notes
+        -----
+        The method automatically handles batches of different-length arrays by
+        using NaN padding. The interpolation is performed in parallel across
+        all arrays in the batch.
         """
         x, y = self.sanitize_input(x, y)
 
@@ -192,7 +287,27 @@ class AkimaInterpolant1D():
     
     def linear_interpolate_gpu(self, x_new, x, y, nin, ngroups, nnans, result):
         """
-        Optimized GPU interpolation with precomputed slopes and binary search
+        GPU implementation of linear interpolation with precomputed slopes.
+        
+        This method performs optimized linear interpolation on the GPU using
+        precomputed slopes and binary search for interval location.
+
+        Parameters
+        ----------
+        x_new : array_like
+            New x-values for interpolation
+        x : array_like
+            Flattened x data
+        y : array_like
+            Flattened y data
+        nin : int
+            Number of groups
+        ngroups : int
+            Maximum points per group
+        nnans : array_like
+            Number of NaN values per group
+        result : array_like
+            Output array for interpolated values
         """
         # Allocate temporary arrays for precomputed slopes
         total_points = nin * ngroups
@@ -221,7 +336,27 @@ class AkimaInterpolant1D():
     
     def linear_interpolate_cpu(self, x_new, x, y, nin, ngroups, nnans, result):
         """
-        Optimized CPU interpolation with precomputed slopes and parallel execution
+        CPU implementation of linear interpolation with precomputed slopes.
+        
+        This method performs optimized linear interpolation on the CPU using
+        precomputed slopes, binary search, and parallel execution.
+
+        Parameters
+        ----------
+        x_new : array_like
+            New x-values for interpolation
+        x : array_like
+            Flattened x data
+        y : array_like
+            Flattened y data
+        nin : int
+            Number of groups
+        ngroups : int
+            Maximum points per group
+        nnans : array_like
+            Number of NaN values per group
+        result : array_like
+            Output array for interpolated values
         """
         # Step 1: Precompute all linear slopes
         linear_slopes = precompute_all_linear_slopes_cpu(x, y, nin, ngroups, nnans)
@@ -232,7 +367,27 @@ class AkimaInterpolant1D():
     
     def cubic_interpolate_gpu(self, x_new, x, y, nin, ngroups, nnans, result):
         """
-        Optimized GPU interpolation with precomputed slopes and binary search
+        GPU implementation of Akima spline interpolation with precomputed slopes.
+        
+        This method performs optimized Akima spline interpolation on the GPU using
+        precomputed linear and spline slopes with binary search for interval location.
+
+        Parameters
+        ----------
+        x_new : array_like
+            New x-values for interpolation
+        x : array_like
+            Flattened x data
+        y : array_like
+            Flattened y data
+        nin : int
+            Number of groups
+        ngroups : int
+            Maximum points per group
+        nnans : array_like
+            Number of NaN values per group
+        result : array_like
+            Output array for interpolated values
         """
         # Allocate temporary arrays for precomputed slopes
         total_points = nin * ngroups
@@ -266,7 +421,27 @@ class AkimaInterpolant1D():
     
     def cubic_interpolate_cpu(self, x_new, x, y, nin, ngroups, nnans, result):
         """
-        Optimized CPU interpolation with precomputed slopes and parallel execution
+        CPU implementation of Akima spline interpolation with precomputed slopes.
+        
+        This method performs optimized Akima spline interpolation on the CPU using
+        precomputed linear and spline slopes with binary search and parallel execution.
+
+        Parameters
+        ----------
+        x_new : array_like
+            New x-values for interpolation
+        x : array_like
+            Flattened x data
+        y : array_like
+            Flattened y data
+        nin : int
+            Number of groups
+        ngroups : int
+            Maximum points per group
+        nnans : array_like
+            Number of NaN values per group
+        result : array_like
+            Output array for interpolated values
         """
         # Step 1: Precompute all linear slopes
         linear_slopes = precompute_all_linear_slopes_cpu(x, y, nin, ngroups, nnans)
@@ -280,44 +455,82 @@ class AkimaInterpolant1D():
         
 class AkimaInterpolant1DMultiDim(AkimaInterpolant1D):
     """
-    GPU-accelerated parallel Akima Splines with multidimensional x_new support.
+    Akima spline interpolator with multidimensional x_new support.
     
-    This class extends the base AkimaInterpolant1D to handle multidimensional x_new arrays,
-    where each group in the batch can have different interpolation points.
+    This class extends AkimaInterpolant1D to handle multidimensional x_new arrays,
+    where each group in the batch can have its own set of interpolation points.
     
-    Key difference from base class:
-    - x_new can have shape (..., n_f) matching the batch dimensions of x and y
+    The key difference from the base class is that x_new can have shape (..., n_f)
+    matching the batch dimensions of x and y, allowing different interpolation
+    points for each group.
+    
+    Parameters
+    ----------
+    use_gpu : bool, optional
+        If True, use GPU acceleration if available. Default is True.
+    threadsperblock : int, optional
+        Number of threads per block for GPU execution. Default is 64.
+    order : {'linear', 'cubic'}, optional
+        Interpolation order. Default is 'cubic'.
+    sanitize : bool, optional
+        If True, sort input data. Default is False.
+    verbose : bool, optional
+        If True, print information. Default is False.
+    
+    Examples
+    --------
+    With multidimensional x_new where each group has different interpolation points:
+    
+    >>> import numpy as np
+    >>> from cudakima import AkimaInterpolant1DMultiDim
+    >>> 
+    >>> # Batch data with shape (2, 3, 10)
+    >>> x = np.random.rand(2, 3, 10)
+    >>> y = np.sin(x)
+    >>> 
+    >>> # Different interpolation points for each group (2, 3, 50)
+    >>> x_new = np.random.rand(2, 3, 50)
+    >>> 
+    >>> interpolant = AkimaInterpolant1DMultiDim()
+    >>> y_new = interpolant(x_new, x, y)  # Shape: (2, 3, 50)
+    
+    Notes
+    -----
+    - x_new must have the same batch dimensions as x and y
     - Each group gets its own set of interpolation points
-    - Output shape remains (..., n_f) as before
+    - Inherits all methods and attributes from AkimaInterpolant1D
     
-    Example:
-    If you have batch data with shape (M, L, K, n) and want different interpolation
-    points for each group:
-    ```
-    x = np.random.rand(2, 3, 10)  # 2x3 batch, 10 points each
-    y = np.sin(x)  # same shape
-    x_new = np.random.rand(2, 3, 50)  # 2x3 batch, 50 interp points each
-    
-    interpolant = AkimaInterpolant1DMultiDim()
-    y_new = interpolant(x_new, x, y)  # shape: (2, 3, 50)
-    ```
-    
-    Parameters are the same as AkimaInterpolant1D.
+    See Also
+    --------
+    AkimaInterpolant1D : Base class with 1D x_new
+    AkimaInterpolant1DFlexible : Automatically chooses between 1D and multidimensional modes
     """
     
     def __call__(self, x_new, x, y, **kwargs):
         """
-        Interpolates with multidimensional x_new arrays.
+        Interpolate with multidimensional x_new arrays.
 
-        Parameters:
-            x_new (ndarray): The new x-values to interpolate. Shape=(..., n_f) where ... 
-                           matches the batch dimensions of x and y.
-            x (ndarray): The x-values of the data points. Shape=(..., n).
-            y (ndarray): The y-values of the data points. Shape=(..., n).
-            **kwargs: Additional keyword arguments.
+        Parameters
+        ----------
+        x_new : array_like, shape (..., n_f)
+            New x-values at which to interpolate. Batch dimensions (...) must 
+            match those of x and y.
+        x : array_like, shape (..., n)
+            X-values of the data points.
+        y : array_like, shape (..., n)
+            Y-values of the data points.
+        **kwargs : dict, optional
+            Additional keyword arguments.
 
-        Returns:
-            ndarray: The interpolated values. Shape=(..., n_f).
+        Returns
+        -------
+        y_new : ndarray, shape (..., n_f)
+            Interpolated values.
+            
+        Raises
+        ------
+        ValueError
+            If x_new batch dimensions don't match x and y batch dimensions.
         """
         # Validate input shapes
         if x.shape[:-1] != y.shape[:-1]:
@@ -467,21 +680,56 @@ class AkimaInterpolant1DMultiDim(AkimaInterpolant1D):
 
 class AkimaInterpolant1DFlexible(AkimaInterpolant1D):
     """
-    Flexible Akima interpolator that automatically detects x_new dimensionality.
+    Flexible Akima interpolator with automatic mode detection.
     
-    This class automatically chooses between standard (1D x_new) and multidimensional
-    x_new interpolation based on the input array shapes.
+    This class automatically detects whether x_new is 1D (broadcast across all groups)
+    or multidimensional (different for each group) and dispatches to the appropriate
+    interpolation method.
     
-    Usage:
-    ```
-    interpolant = AkimaInterpolant1DFlexible()
+    This provides a unified interface that handles both use cases seamlessly.
     
-    # Standard usage (1D x_new for all groups)
-    y_new = interpolant(x_new_1d, x, y)
+    Parameters
+    ----------
+    use_gpu : bool, optional
+        If True, use GPU acceleration if available. Default is True.
+    threadsperblock : int, optional
+        Number of threads per block for GPU execution. Default is 64.
+    order : {'linear', 'cubic'}, optional
+        Interpolation order. Default is 'cubic'.
+    sanitize : bool, optional
+        If True, sort input data. Default is False.
+    verbose : bool, optional
+        If True, print information. Default is False.
     
-    # Multidimensional usage (different x_new for each group)  
-    y_new = interpolant(x_new_multidim, x, y)
-    ```
+    Examples
+    --------
+    Works seamlessly with both 1D and multidimensional x_new:
+    
+    >>> import numpy as np
+    >>> from cudakima import AkimaInterpolant1DFlexible
+    >>> 
+    >>> interpolant = AkimaInterpolant1DFlexible()
+    >>> 
+    >>> # Standard usage (1D x_new broadcast to all groups)
+    >>> x = np.random.rand(10, 20)
+    >>> y = np.sin(x)
+    >>> x_new_1d = np.linspace(0, 1, 100)
+    >>> y_new = interpolant(x_new_1d, x, y)  # Shape: (10, 100)
+    >>> 
+    >>> # Multidimensional usage (different x_new for each group)  
+    >>> x_new_multi = np.random.rand(10, 100)
+    >>> y_new = interpolant(x_new_multi, x, y)  # Shape: (10, 100)
+    
+    Notes
+    -----
+    The class automatically determines the mode based on x_new shape:
+    - If x_new.shape[:-1] == x.shape[:-1], uses multidimensional mode
+    - Otherwise, uses standard mode (broadcasts x_new)
+    
+    See Also
+    --------
+    AkimaInterpolant1D : Base class for standard interpolation
+    AkimaInterpolant1DMultiDim : Multidimensional interpolation
     """
 
     @property
@@ -499,7 +747,30 @@ class AkimaInterpolant1DFlexible(AkimaInterpolant1D):
 
     def __call__(self, x_new, x, y, **kwargs):
         """
-        Automatically dispatch to appropriate interpolation method based on x_new shape.
+        Automatically dispatch to appropriate interpolation method.
+        
+        Determines whether to use standard or multidimensional interpolation
+        based on the shape of x_new.
+
+        Parameters
+        ----------
+        x_new : array_like
+            New x-values for interpolation. Can be either:
+            - 1D array (n_f,) - broadcast to all groups
+            - Multidimensional (..., n_f) - different for each group
+        x : array_like, shape (..., n)
+            X-values of the data points.
+        y : array_like, shape (..., n)
+            Y-values of the data points.
+        **kwargs : dict, optional
+            Additional keyword arguments.
+
+        Returns
+        -------
+        y_new : ndarray
+            Interpolated values. Shape depends on x_new:
+            - If x_new is 1D: shape (..., n_f)
+            - If x_new is multidimensional: shape (..., n_f)
         """
         x_new = self.xp.asarray(x_new)
         x = self.xp.asarray(x)
