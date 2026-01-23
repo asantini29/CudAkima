@@ -26,6 +26,13 @@ venv/
 ENV/
 env/
 
+# Documentation builds
+docs/build/
+docs/source/_build/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
 # IDE
 .vscode/
 .idea/
