@@ -18,8 +18,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "numpy==2.3.5",
-    "numba==0.63.1",
+    "numpy>=2.3.5",
+    "numba>=0.63.1",
 ]
 
 [project.urls]
