@@ -1,6 +1,6 @@
 [project]
 name = "cudakima"
-version = "0.2.2"
+version = "0.2.3"
 description = "GPU-accelerated, parallel implementation of Akima Splines"
 authors = [
     { name = "Alessandro Santini", email = "alessandro.santini@aei.mpg.de" }
